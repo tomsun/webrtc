@@ -126,16 +126,16 @@ func (t *TrackRemote) peek(b []byte) (n int, err error) {
 }
 
 // ReadRTP is a convenience method that wraps Read and unmarshals for you
-func (t *TrackRemote) ReadRTP() (*rtp.Packet, error) {
+func (t *TrackRemote) ReadRTP() (rtp.Packet, error) {
 	b := make([]byte, receiveMTU)
 	i, err := t.Read(b)
 	if err != nil {
-		return nil, err
+		return rtp.Packet{}, err
 	}
 
-	r := &rtp.Packet{}
+	r := rtp.Packet{}
 	if err := r.Unmarshal(b[:i]); err != nil {
-		return nil, err
+		return rtp.Packet{}, err
 	}
 	return r, nil
 }

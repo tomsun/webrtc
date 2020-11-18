@@ -41,7 +41,7 @@ func NewWith(w io.Writer) *H264Writer {
 }
 
 // WriteRTP adds a new packet and writes the appropriate headers for it
-func (h *H264Writer) WriteRTP(packet *rtp.Packet) error {
+func (h *H264Writer) WriteRTP(packet rtp.Packet) error {
 	if len(packet.Payload) == 0 {
 		return nil
 	}

@@ -168,11 +168,7 @@ func (i *OggWriter) createPage(payload []uint8, headerType uint8, granulePos uin
 }
 
 // WriteRTP adds a new packet and writes the appropriate headers for it
-func (i *OggWriter) WriteRTP(packet *rtp.Packet) error {
-	if packet == nil {
-		return errInvalidNilPacket
-	}
-
+func (i *OggWriter) WriteRTP(packet rtp.Packet) error {
 	opusPacket := codecs.OpusPacket{}
 	if _, err := opusPacket.Unmarshal(packet.Payload); err != nil {
 		// Only handle Opus packets

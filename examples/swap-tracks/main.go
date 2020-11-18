@@ -70,7 +70,7 @@ func main() { // nolint:gocognit
 	// The total number of tracks
 	trackCount := 0
 	// The channel of packets with a bit of buffer
-	packets := make(chan *rtp.Packet, 60)
+	packets := make(chan rtp.Packet, 60)
 
 	// Set a handler for when a new remote track starts
 	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {

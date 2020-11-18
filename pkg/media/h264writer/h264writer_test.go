@@ -112,11 +112,10 @@ func TestWriteRTP(t *testing.T) {
 				hasKeyFrame: tt.hasKeyFrame,
 				writer:      writer,
 			}
-			packet := &rtp.Packet{
-				Payload: tt.payload,
-			}
 
-			err := h264Writer.WriteRTP(packet)
+			err := h264Writer.WriteRTP(rtp.Packet{
+				Payload: tt.payload,
+			})
 
 			assert.Equal(t, tt.wantErr, err)
 			assert.True(t, bytes.Equal(tt.wantBytes, writer.Bytes()))

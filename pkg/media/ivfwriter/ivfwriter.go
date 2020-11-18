@@ -11,10 +11,7 @@ import (
 	"github.com/pion/rtp/codecs"
 )
 
-var (
-	errFileNotOpened    = errors.New("file not opened")
-	errInvalidNilPacket = errors.New("invalid nil packet")
-)
+var errFileNotOpened = errors.New("file not opened")
 
 // IVFWriter is used to take RTP packets and write them to an IVF on disk
 type IVFWriter struct {
@@ -72,7 +69,7 @@ func (i *IVFWriter) writeHeader() error {
 }
 
 // WriteRTP adds a new packet and writes the appropriate headers for it
-func (i *IVFWriter) WriteRTP(packet *rtp.Packet) error {
+func (i *IVFWriter) WriteRTP(packet rtp.Packet) error {
 	if i.ioWriter == nil {
 		return errFileNotOpened
 	}

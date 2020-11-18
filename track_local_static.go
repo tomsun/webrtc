@@ -102,7 +102,7 @@ func (s *TrackLocalStaticRTP) Kind() RTPCodecType {
 // If one PeerConnection fails the packets will still be sent to
 // all PeerConnections. The error message will contain the ID of the failed
 // PeerConnections so you can remove them
-func (s *TrackLocalStaticRTP) WriteRTP(p *rtp.Packet) error {
+func (s *TrackLocalStaticRTP) WriteRTP(p rtp.Packet) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -123,7 +123,7 @@ func (s *TrackLocalStaticRTP) WriteRTP(p *rtp.Packet) error {
 // all PeerConnections. The error message will contain the ID of the failed
 // PeerConnections so you can remove them
 func (s *TrackLocalStaticRTP) Write(b []byte) (n int, err error) {
-	packet := &rtp.Packet{}
+	packet := rtp.Packet{}
 	if err = packet.Unmarshal(b); err != nil {
 		return 0, err
 	}
@@ -226,7 +226,7 @@ func (s *TrackLocalStaticSample) WriteSample(sample media.Sample) error {
 
 	writeErrs := []error{}
 	for _, p := range packets {
-		if err := s.rtpTrack.WriteRTP(p); err != nil {
+		if err := s.rtpTrack.WriteRTP(*p); err != nil {
 			writeErrs = append(writeErrs, err)
 		}
 	}

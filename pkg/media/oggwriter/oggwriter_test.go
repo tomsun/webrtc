@@ -13,7 +13,7 @@ type oggWriterPacketTest struct {
 	buffer       io.Writer
 	message      string
 	messageClose string
-	packet       *rtp.Packet
+	packet       rtp.Packet
 	writer       *OggWriter
 	err          error
 	closeErr     error
@@ -25,7 +25,7 @@ func TestOggWriter_AddPacketAndClose(t *testing.T) {
 		0x27, 0x82, 0x00, 0x01, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x98, 0x36, 0xbe, 0x88, 0x9e,
 	}
 
-	validPacket := &rtp.Packet{
+	validPacket := rtp.Packet{
 		Header: rtp.Header{
 			Marker:           true,
 			Extension:        true,
@@ -60,7 +60,7 @@ func TestOggWriter_AddPacketAndClose(t *testing.T) {
 			buffer:       &bytes.Buffer{},
 			message:      "OggWriter shouldn't be able to write an empty packet",
 			messageClose: "OggWriter should be able to close the file",
-			packet:       &rtp.Packet{},
+			packet:       rtp.Packet{},
 			err:          errInvalidNilPacket,
 			closeErr:     nil,
 		},
@@ -76,7 +76,7 @@ func TestOggWriter_AddPacketAndClose(t *testing.T) {
 			buffer:       nil,
 			message:      "OggWriter shouldn't be able to write something to a closed file",
 			messageClose: "OggWriter should be able to close an already closed file",
-			packet:       nil,
+			packet:       rtp.Packet{},
 			err:          errFileNotOpened,
 			closeErr:     nil,
 		},
