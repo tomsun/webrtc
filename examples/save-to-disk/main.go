@@ -10,6 +10,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/examples/internal/signal"
+	"github.com/pion/webrtc/v3/pkg/interceptor"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/pion/webrtc/v3/pkg/media/ivfwriter"
 	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
@@ -54,8 +55,13 @@ func main() {
 		panic(err)
 	}
 
+	ir := &webrtc.InterceptorRegistry{}
+	if err := interceptor.RegisterDefaults(&m, ir); err != nil {
+		panic(err)
+	}
+
 	// Create the API object with the MediaEngine
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(&m))
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(&m), webrtc.WithInterceptorRegistry(ir))
 
 	// Prepare the configuration
 	config := webrtc.Configuration{

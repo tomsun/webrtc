@@ -76,6 +76,8 @@ type PeerConnection struct {
 	// A reference to the associated API state used by this connection
 	api *API
 	log logging.LeveledLogger
+
+	interceptorWriteRTCP func(pkts []rtcp.Packet, attributes map[interface{}]interface{}) (int, error)
 }
 
 // NewPeerConnection creates a peerconnection with the default
@@ -118,6 +120,8 @@ func (api *API) NewPeerConnection(configuration Configuration) (*PeerConnection,
 		api: api,
 		log: api.settingEngine.LoggerFactory.NewLogger("pc"),
 	}
+
+	pc.interceptorWriteRTCP = api.interceptor.BindWriteRTCP(pc.writeRTCP)
 
 	var err error
 	if err = pc.initConfiguration(configuration); err != nil {
@@ -1119,7 +1123,7 @@ func (pc *PeerConnection) startReceiver(incoming trackDetails, receiver *RTPRece
 			return
 		}
 
-		codec, err := pc.api.mediaEngine.getCodecByPayload(receiver.Track().PayloadType())
+		params, err := pc.api.mediaEngine.getRTPParametersByPayloadType(receiver.Track().PayloadType())
 		if err != nil {
 			pc.log.Warnf("no codec could be found for payloadType %d", receiver.Track().PayloadType())
 			return
@@ -1127,7 +1131,8 @@ func (pc *PeerConnection) startReceiver(incoming trackDetails, receiver *RTPRece
 
 		receiver.Track().mu.Lock()
 		receiver.Track().kind = receiver.kind
-		receiver.Track().codec = codec
+		receiver.Track().codec = params.Codecs[0]
+		receiver.Track().params = params
 		receiver.Track().mu.Unlock()
 
 		pc.onTrack(receiver.Track(), receiver)
@@ -1329,7 +1334,7 @@ func (pc *PeerConnection) handleUndeclaredSSRC(rtpStream io.Reader, ssrc SSRC) e
 			continue
 		}
 
-		codec, err := pc.api.mediaEngine.getCodecByPayload(payloadType)
+		params, err := pc.api.mediaEngine.getRTPParametersByPayloadType(payloadType)
 		if err != nil {
 			return err
 		}
@@ -1339,7 +1344,7 @@ func (pc *PeerConnection) handleUndeclaredSSRC(rtpStream io.Reader, ssrc SSRC) e
 				continue
 			}
 
-			track, err := t.Receiver().receiveForRid(rid, codec, ssrc)
+			track, err := t.Receiver().receiveForRid(rid, params, ssrc)
 			if err != nil {
 				return err
 			}
@@ -1724,28 +1729,33 @@ func (pc *PeerConnection) SetIdentityProvider(provider string) error {
 	return errPeerConnSetIdentityProviderNotImplemented
 }
 
-// WriteRTCP sends a user provided RTCP packet to the connected peer
-// If no peer is connected the packet is discarded
+// WriteRTCP sends a user provided RTCP packet to the connected peer. If no peer is connected the
+// packet is discarded. It also runs any configured interceptors.
 func (pc *PeerConnection) WriteRTCP(pkts []rtcp.Packet) error {
+	_, err := pc.interceptorWriteRTCP(pkts, make(map[interface{}]interface{}))
+	return err
+}
+
+func (pc *PeerConnection) writeRTCP(pkts []rtcp.Packet, _ map[interface{}]interface{}) (int, error) {
 	raw, err := rtcp.Marshal(pkts)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	srtcpSession, err := pc.dtlsTransport.getSRTCPSession()
 	if err != nil {
-		return nil
+		return 0, nil
 	}
 
 	writeStream, err := srtcpSession.OpenWriteStream()
 	if err != nil {
-		return fmt.Errorf("%w: %v", errPeerConnWriteRTCPOpenWriteStream, err)
+		return 0, fmt.Errorf("%w: %v", errPeerConnWriteRTCPOpenWriteStream, err)
 	}
 
-	if _, err := writeStream.Write(raw); err != nil {
-		return err
+	if n, err := writeStream.Write(raw); err != nil {
+		return n, err
 	}
-	return nil
+	return 0, nil
 }
 
 // Close ends the PeerConnection
@@ -1768,6 +1778,8 @@ func (pc *PeerConnection) Close() error {
 	//    Conn if one of the endpoints is closed down. To
 	//    continue the chain the Mux has to be closed.
 	closeErrs := make([]error, 4)
+
+	closeErrs = append(closeErrs, pc.api.interceptor.Close())
 
 	// https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-close (step #4)
 	for _, t := range pc.GetTransceivers() {

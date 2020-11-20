@@ -13,6 +13,7 @@ import (
 type API struct {
 	settingEngine *SettingEngine
 	mediaEngine   *MediaEngine
+	interceptor   Interceptor
 }
 
 // NewAPI Creates a new API object for keeping semi-global settings to WebRTC objects
@@ -35,6 +36,10 @@ func NewAPI(options ...func(*API)) *API {
 		a.mediaEngine = &MediaEngine{}
 	}
 
+	if a.interceptor == nil {
+		a.interceptor = &NoOpInterceptor{}
+	}
+
 	return a
 }
 
@@ -55,5 +60,13 @@ func WithMediaEngine(m *MediaEngine) func(a *API) {
 func WithSettingEngine(s SettingEngine) func(a *API) {
 	return func(a *API) {
 		a.settingEngine = &s
+	}
+}
+
+// WithInterceptorRegistry allows providing Interceptors to the API.
+// Settings should not be changed after passing the registry to an API.
+func WithInterceptorRegistry(interceptorRegistry *InterceptorRegistry) func(a *API) {
+	return func(a *API) {
+		a.interceptor = interceptorRegistry.build()
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/pion/randutil"
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/srtp"
 )
 
@@ -16,13 +17,12 @@ type RTPSender struct {
 	track TrackLocal
 
 	rtcpReadStream *srtp.ReadStreamSRTCP
-	rtpWriteStream *srtp.WriteStreamSRTP
+	context        TrackLocalContext
 
 	transport *DTLSTransport
 
 	payloadType PayloadType
 	ssrc        SSRC
-	codec       RTPCodecParameters
 
 	// nolint:godox
 	// TODO(sgotti) remove this when in future we'll avoid replacing
@@ -36,6 +36,8 @@ type RTPSender struct {
 
 	mu                     sync.RWMutex
 	sendCalled, stopCalled chan interface{}
+
+	interceptorReadRTCP func() ([]rtcp.Packet, map[interface{}]interface{}, error)
 }
 
 // NewRTPSender constructs a new RTPSender
@@ -51,7 +53,7 @@ func (api *API) NewRTPSender(track TrackLocal, transport *DTLSTransport) (*RTPSe
 		return nil, err
 	}
 
-	return &RTPSender{
+	r := &RTPSender{
 		track:      track,
 		transport:  transport,
 		api:        api,
@@ -59,7 +61,10 @@ func (api *API) NewRTPSender(track TrackLocal, transport *DTLSTransport) (*RTPSe
 		stopCalled: make(chan interface{}),
 		ssrc:       SSRC(randutil.NewMathRandomGenerator().Uint32()),
 		id:         id,
-	}, nil
+	}
+	r.interceptorReadRTCP = api.interceptor.BindReadRTCP(r.readRTCP)
+
+	return r, nil
 }
 
 func (r *RTPSender) isNegotiated() bool {
@@ -97,11 +102,7 @@ func (r *RTPSender) ReplaceTrack(track TrackLocal) error {
 	defer r.mu.Unlock()
 
 	if r.hasSent() {
-		if err := r.track.Unbind(TrackLocalContext{
-			id:          r.id,
-			ssrc:        r.ssrc,
-			writeStream: r.rtpWriteStream,
-		}); err != nil {
+		if err := r.track.Unbind(r.context); err != nil {
 			return err
 		}
 	}
@@ -111,12 +112,7 @@ func (r *RTPSender) ReplaceTrack(track TrackLocal) error {
 		return nil
 	}
 
-	if _, err := track.Bind(TrackLocalContext{
-		id:          r.id,
-		codecs:      []RTPCodecParameters{r.codec},
-		ssrc:        r.ssrc,
-		writeStream: r.rtpWriteStream,
-	}); err != nil {
+	if _, err := track.Bind(r.context); err != nil {
 		return err
 	}
 
@@ -148,18 +144,29 @@ func (r *RTPSender) Send(parameters RTPSendParameters) error {
 		return err
 	}
 
-	if r.rtpWriteStream, err = srtpSession.OpenWriteStream(); err != nil {
+	rtpWriteStream, err := srtpSession.OpenWriteStream()
+	if err != nil {
 		return err
 	}
 
-	if r.codec, err = r.track.Bind(TrackLocalContext{
+	writeStream := &interceptorTrackLocalWriter{TrackLocalWriter: rtpWriteStream}
+
+	r.context = TrackLocalContext{
 		id:          r.id,
-		codecs:      r.api.mediaEngine.getCodecsByKind(r.track.Kind()),
+		params:      r.api.mediaEngine.getRTPParametersByKind(r.track.Kind()),
 		ssrc:        parameters.Encodings.SSRC,
-		writeStream: r.rtpWriteStream,
-	}); err != nil {
+		writeStream: writeStream,
+	}
+
+	codec, err := r.track.Bind(r.context)
+	if err != nil {
 		return err
 	}
+	r.context.params.Codecs = []RTPCodecParameters{codec}
+
+	writeStream.setWriteRTP(r.api.interceptor.BindLocalTrack(&r.context, func(p *rtp.Packet, attributes map[interface{}]interface{}) (int, error) {
+		return rtpWriteStream.WriteRTP(&p.Header, p.Payload)
+	}))
 
 	close(r.sendCalled)
 	return nil
@@ -194,15 +201,26 @@ func (r *RTPSender) Read(b []byte) (n int, err error) {
 	}
 }
 
-// ReadRTCP is a convenience method that wraps Read and unmarshals for you
+// ReadRTCP is a convenience method that wraps Read and unmarshals for you.
+// It also runs any configured interceptors.
 func (r *RTPSender) ReadRTCP() ([]rtcp.Packet, error) {
+	pkts, _, err := r.interceptorReadRTCP()
+	return pkts, err
+}
+
+func (r *RTPSender) readRTCP() ([]rtcp.Packet, map[interface{}]interface{}, error) {
 	b := make([]byte, receiveMTU)
 	i, err := r.Read(b)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return rtcp.Unmarshal(b[:i])
+	pkts, err := rtcp.Unmarshal(b[:i])
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return pkts, make(map[interface{}]interface{}), nil
 }
 
 // hasSent tells if data has been ever sent for this instance
