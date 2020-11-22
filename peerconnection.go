@@ -969,14 +969,42 @@ func (pc *PeerConnection) SetRemoteDescription(desc SessionDescription) error { 
 		return err
 	}
 
-	if err := pc.api.mediaEngine.updateFromRemoteDescription(*desc.parsed); err != nil {
-		return err
-	}
-
 	var t *RTPTransceiver
 	localTransceivers := append([]*RTPTransceiver{}, pc.GetTransceivers()...)
 	detectedPlanB := descriptionIsPlanB(pc.RemoteDescription())
 	weOffer := desc.Type == SDPTypeAnswer
+
+	if detectedPlanB {
+		if err := pc.api.mediaEngine.updateFromRemoteDescription(*desc.parsed); err != nil {
+			return err
+		}
+	}
+
+	if weOffer && !detectedPlanB {
+		for _, media := range pc.RemoteDescription().parsed.MediaDescriptions {
+			midValue := getMidValue(media)
+			if midValue == "" {
+				return errPeerConnRemoteDescriptionWithoutMidValue
+			}
+			if media.MediaName.Media == mediaSectionApplication {
+				continue
+			}
+
+			kind := NewRTPCodecType(media.MediaName.Media)
+			direction := getPeerDirection(media)
+			if kind == 0 || direction == RTPTransceiverDirection(Unknown) {
+				continue
+			}
+
+			t, localTransceivers = findByMid(midValue, localTransceivers)
+
+			if t != nil {
+				if err := pc.api.mediaEngine.updateFromMediaDescription(media, t); err != nil {
+					return err
+				}
+			}
+		}
+	}
 
 	if !weOffer && !detectedPlanB {
 		for _, media := range pc.RemoteDescription().parsed.MediaDescriptions {
@@ -1015,6 +1043,11 @@ func (pc *PeerConnection) SetRemoteDescription(desc SessionDescription) error { 
 			}
 			if t.Mid() == "" {
 				if err := t.setMid(midValue); err != nil {
+					return err
+				}
+			}
+			if t != nil {
+				if err := pc.api.mediaEngine.updateFromMediaDescription(media, t); err != nil {
 					return err
 				}
 			}
@@ -1119,10 +1152,28 @@ func (pc *PeerConnection) startReceiver(incoming trackDetails, receiver *RTPRece
 			return
 		}
 
-		codec, err := pc.api.mediaEngine.getCodecByPayload(receiver.Track().PayloadType())
-		if err != nil {
-			pc.log.Warnf("no codec could be found for payloadType %d", receiver.Track().PayloadType())
-			return
+		var (
+			codec RTPCodecParameters
+			err   error
+		)
+
+		if len(receiver.codecs) == 0 {
+			if codec, err = pc.api.mediaEngine.getCodecByPayload(receiver.Track().PayloadType()); err != nil {
+				pc.log.Warnf("no codec could be found for payloadType %d", receiver.Track().PayloadType())
+				return
+			}
+		} else {
+			pl := receiver.Track().PayloadType()
+			for _, c := range receiver.codecs {
+				if c.PayloadType == pl {
+					codec = c
+					break
+				}
+			}
+			if codec.PayloadType != pl {
+				pc.log.Warnf("no codec could be found for payloadType %d", receiver.Track().PayloadType())
+				return
+			}
 		}
 
 		receiver.Track().mu.Lock()
@@ -1181,7 +1232,6 @@ func (pc *PeerConnection) startRTPReceivers(incomingTracks []trackDetails, curre
 				(t.Receiver().haveReceived()) {
 				continue
 			}
-
 			pc.startReceiver(incomingTrack, t.Receiver())
 			trackHandled = true
 			break
@@ -1210,14 +1260,7 @@ func (pc *PeerConnection) startRTPReceivers(incomingTracks []trackDetails, curre
 func (pc *PeerConnection) startRTPSenders(currentTransceivers []*RTPTransceiver) {
 	for _, transceiver := range currentTransceivers {
 		if transceiver.Sender() != nil && transceiver.Sender().isNegotiated() && !transceiver.Sender().hasSent() {
-			err := transceiver.Sender().Send(RTPSendParameters{
-				Encodings: RTPEncodingParameters{
-					RTPCodingParameters{
-						SSRC:        transceiver.Sender().ssrc,
-						PayloadType: transceiver.Sender().payloadType,
-					},
-				},
-			})
+			err := transceiver.Sender().Send()
 			if err != nil {
 				pc.log.Warnf("Failed to start Sender: %s", err)
 			}
@@ -1488,6 +1531,13 @@ func (pc *PeerConnection) AddTrack(track TrackLocal) (*RTPSender, error) {
 		if err != nil {
 			return nil, err
 		}
+		codecs := pc.api.mediaEngine.getCodecsByKind(track.Kind())
+		codecParam, err := codecParametersFuzzySearch(RTPCodecParameters{RTPCodecCapability: track.Codec()}, codecs)
+		if err != nil {
+			return nil, err
+		}
+		sender.setExtensionHeaders(pc.api.mediaEngine.getExtMapFromKind(track.Kind()))
+		sender.setCodecParameters([]RTPCodecParameters{codecParam})
 		transceiver.setSender(sender)
 		// we still need to call setSendingTrack to ensure direction has changed
 		if err := transceiver.setSendingTrack(track); err != nil {
@@ -1497,7 +1547,6 @@ func (pc *PeerConnection) AddTrack(track TrackLocal) (*RTPSender, error) {
 
 		return sender, nil
 	}
-
 	transceiver, err := pc.AddTransceiverFromTrack(track)
 	if err != nil {
 		return nil, err
@@ -1536,7 +1585,7 @@ func (pc *PeerConnection) RemoveTrack(sender *RTPSender) error {
 }
 
 // AddTransceiverFromKind Create a new RtpTransceiver(SendRecv or RecvOnly) and add it to the set of transceivers.
-func (pc *PeerConnection) AddTransceiverFromKind(kind RTPCodecType, init ...RtpTransceiverInit) (*RTPTransceiver, error) {
+func (pc *PeerConnection) AddTransceiverFromKind(kind RTPCodecType, init ...RTPTransceiverInit) (*RTPTransceiver, error) {
 	if pc.isClosed.get() {
 		return nil, &rtcerr.InvalidStateError{Err: ErrConnectionClosed}
 	}
@@ -1566,7 +1615,7 @@ func (pc *PeerConnection) AddTransceiverFromKind(kind RTPCodecType, init ...RtpT
 		if err != nil {
 			return nil, err
 		}
-
+		receiver.codecs = pc.api.mediaEngine.getCodecsByKind(kind)
 		t := pc.newRTPTransceiver(
 			receiver,
 			nil,
@@ -1587,12 +1636,17 @@ func (pc *PeerConnection) AddTransceiverFromTrack(track TrackLocal, init ...RtpT
 	if pc.isClosed.get() {
 		return nil, &rtcerr.InvalidStateError{Err: ErrConnectionClosed}
 	}
-
 	direction := RTPTransceiverDirectionSendrecv
 	if len(init) > 1 {
 		return nil, errPeerConnAddTransceiverFromTrackOnlyAcceptsOne
 	} else if len(init) == 1 {
 		direction = init[0].Direction
+	}
+
+	codecs := pc.api.mediaEngine.getCodecsByKind(track.Kind())
+	codecParam, err := codecParametersFuzzySearch(RTPCodecParameters{RTPCodecCapability: track.Codec()}, codecs)
+	if err != nil {
+		return nil, err
 	}
 
 	switch direction {
@@ -1601,12 +1655,14 @@ func (pc *PeerConnection) AddTransceiverFromTrack(track TrackLocal, init ...RtpT
 		if err != nil {
 			return nil, err
 		}
-
+		receiver.setCodecParameters([]RTPCodecParameters{codecParam})
+		receiver.setExtensionHeaders(pc.api.mediaEngine.getExtMapFromKind(track.Kind()))
 		sender, err := pc.api.NewRTPSender(track, pc.dtlsTransport)
 		if err != nil {
 			return nil, err
 		}
-
+		sender.setExtensionHeaders(pc.api.mediaEngine.getExtMapFromKind(track.Kind()))
+		sender.setCodecParameters([]RTPCodecParameters{codecParam})
 		t := pc.newRTPTransceiver(
 			receiver,
 			sender,
@@ -1623,6 +1679,8 @@ func (pc *PeerConnection) AddTransceiverFromTrack(track TrackLocal, init ...RtpT
 		if err != nil {
 			return nil, err
 		}
+		sender.setExtensionHeaders(pc.api.mediaEngine.getExtMapFromKind(track.Kind()))
+		sender.setCodecParameters([]RTPCodecParameters{codecParam})
 
 		t := pc.newRTPTransceiver(
 			nil,
@@ -2003,16 +2061,15 @@ func (pc *PeerConnection) startRTP(isRenegotiation bool, remoteDesc *SessionDesc
 				pc.log.Warnf("Failed to stop RtpReceiver: %s", err)
 				continue
 			}
-
 			receiver, err := pc.api.NewRTPReceiver(t.Receiver().kind, pc.dtlsTransport)
 			if err != nil {
 				pc.log.Warnf("Failed to create new RtpReceiver: %s", err)
 				continue
 			}
+			receiver.codecs = pc.api.mediaEngine.getCodecsByKind(t.Receiver().kind)
 			t.setReceiver(receiver)
 		}
 	}
-
 	pc.startRTPReceivers(trackDetails, currentTransceivers)
 	pc.startRTPSenders(currentTransceivers)
 	if haveApplicationMediaSection(remoteDesc.parsed) {
