@@ -8,17 +8,14 @@ import (
 
 	"github.com/pion/randutil"
 	"github.com/pion/rtcp"
-	"github.com/pion/srtp"
 )
 
 // RTPSender allows an application to control how a given Track is encoded and transmitted to a remote peer
 type RTPSender struct {
 	track TrackLocal
 
-	rtcpReadStream *srtp.ReadStreamSRTCP
-	rtpWriteStream *srtp.WriteStreamSRTP
-
-	transport *DTLSTransport
+	transport  *DTLSTransport
+	srtpStream *srtpWriterFuture
 
 	payloadType PayloadType
 	ssrc        SSRC
@@ -51,7 +48,7 @@ func (api *API) NewRTPSender(track TrackLocal, transport *DTLSTransport) (*RTPSe
 		return nil, err
 	}
 
-	return &RTPSender{
+	r := &RTPSender{
 		track:      track,
 		transport:  transport,
 		api:        api,
@@ -59,7 +56,10 @@ func (api *API) NewRTPSender(track TrackLocal, transport *DTLSTransport) (*RTPSe
 		stopCalled: make(chan interface{}),
 		ssrc:       SSRC(randutil.NewMathRandomGenerator().Uint32()),
 		id:         id,
-	}, nil
+		srtpStream: &srtpWriterFuture{},
+	}
+	r.srtpStream.rtpSender = r
+	return r, nil
 }
 
 func (r *RTPSender) isNegotiated() bool {
@@ -100,7 +100,7 @@ func (r *RTPSender) ReplaceTrack(track TrackLocal) error {
 		if err := r.track.Unbind(TrackLocalContext{
 			id:          r.id,
 			ssrc:        r.ssrc,
-			writeStream: r.rtpWriteStream,
+			writeStream: r.srtpStream,
 		}); err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ func (r *RTPSender) ReplaceTrack(track TrackLocal) error {
 		id:          r.id,
 		codecs:      []RTPCodecParameters{r.codec},
 		ssrc:        r.ssrc,
-		writeStream: r.rtpWriteStream,
+		writeStream: r.srtpStream,
 	}); err != nil {
 		return err
 	}
@@ -133,30 +133,12 @@ func (r *RTPSender) Send(parameters RTPSendParameters) error {
 		return errRTPSenderSendAlreadyCalled
 	}
 
-	srtcpSession, err := r.transport.getSRTCPSession()
-	if err != nil {
-		return err
-	}
-
-	r.rtcpReadStream, err = srtcpSession.OpenReadStream(uint32(parameters.Encodings.SSRC))
-	if err != nil {
-		return err
-	}
-
-	srtpSession, err := r.transport.getSRTPSession()
-	if err != nil {
-		return err
-	}
-
-	if r.rtpWriteStream, err = srtpSession.OpenWriteStream(); err != nil {
-		return err
-	}
-
+	var err error
 	if r.codec, err = r.track.Bind(TrackLocalContext{
 		id:          r.id,
 		codecs:      r.api.mediaEngine.getCodecsByKind(r.track.Kind()),
 		ssrc:        parameters.Encodings.SSRC,
-		writeStream: r.rtpWriteStream,
+		writeStream: r.srtpStream,
 	}); err != nil {
 		return err
 	}
@@ -181,14 +163,14 @@ func (r *RTPSender) Stop() error {
 		return nil
 	}
 
-	return r.rtcpReadStream.Close()
+	return r.srtpStream.Close()
 }
 
 // Read reads incoming RTCP for this RTPReceiver
 func (r *RTPSender) Read(b []byte) (n int, err error) {
 	select {
 	case <-r.sendCalled:
-		return r.rtcpReadStream.Read(b)
+		return r.srtpStream.Read(b)
 	case <-r.stopCalled:
 		return 0, io.ErrClosedPipe
 	}

@@ -3,6 +3,7 @@
 package webrtc
 
 import (
+	"io"
 	"strings"
 	"sync"
 
@@ -105,6 +106,10 @@ func (s *TrackLocalStaticRTP) Kind() RTPCodecType {
 func (s *TrackLocalStaticRTP) WriteRTP(p *rtp.Packet) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if len(s.bindings) == 0 {
+		return io.ErrClosedPipe
+	}
 
 	writeErrs := []error{}
 	for _, b := range s.bindings {
