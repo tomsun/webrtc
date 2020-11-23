@@ -11,6 +11,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/transport/test"
+	"github.com/pion/webrtc/v3/pkg/interceptor"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/stretchr/testify/assert"
 )
@@ -18,25 +19,25 @@ import (
 type testInterceptor struct {
 	t           *testing.T
 	extensionID uint8
-	writeRTCP   atomic.Value
+	rtcpWriter  atomic.Value
 	lastRTCP    atomic.Value
-	NoOpInterceptor
+	interceptor.NoOp
 }
 
-func (t *testInterceptor) BindLocalTrack(_ *TrackLocalContext, write WriteRTP) WriteRTP {
-	return func(p *rtp.Packet, attributes map[interface{}]interface{}) (int, error) {
+func (t *testInterceptor) BindLocalTrack(_ *interceptor.TrackInfo, writer interceptor.RTPWriter) interceptor.RTPWriter {
+	return interceptor.RTPWriterFunc(func(p *rtp.Packet, attributes interceptor.Attributes) (int, error) {
 		// set extension on outgoing packet
 		p.Header.Extension = true
 		p.Header.ExtensionProfile = 0xBEDE
 		assert.NoError(t.t, p.Header.SetExtension(t.extensionID, []byte("write")))
 
-		return write(p, attributes)
-	}
+		return writer.Write(p, attributes)
+	})
 }
 
-func (t *testInterceptor) BindRemoteTrack(ctx *TrackRemoteContext, read ReadRTP) ReadRTP {
-	return func() (*rtp.Packet, map[interface{}]interface{}, error) {
-		p, attributes, err := read()
+func (t *testInterceptor) BindRemoteTrack(info *interceptor.TrackInfo, reader interceptor.RTPReader) interceptor.RTPReader {
+	return interceptor.RTPReaderFunc(func() (*rtp.Packet, interceptor.Attributes, error) {
+		p, attributes, err := reader.Read()
 		if err != nil {
 			return nil, nil, err
 		}
@@ -46,18 +47,18 @@ func (t *testInterceptor) BindRemoteTrack(ctx *TrackRemoteContext, read ReadRTP)
 		assert.NoError(t.t, p.Header.SetExtension(t.extensionID, []byte("read")))
 
 		// write back a pli
-		writeRTCP := t.writeRTCP.Load().(WriteRTCP)
-		pli := &rtcp.PictureLossIndication{SenderSSRC: uint32(ctx.SSRC()), MediaSSRC: uint32(ctx.SSRC())}
-		_, err = writeRTCP([]rtcp.Packet{pli}, make(map[interface{}]interface{}))
+		rtcpWriter := t.rtcpWriter.Load().(interceptor.RTCPWriter)
+		pli := &rtcp.PictureLossIndication{SenderSSRC: uint32(info.SSRC), MediaSSRC: uint32(info.SSRC)}
+		_, err = rtcpWriter.Write([]rtcp.Packet{pli}, make(interceptor.Attributes))
 		assert.NoError(t.t, err)
 
 		return p, attributes, nil
-	}
+	})
 }
 
-func (t *testInterceptor) BindReadRTCP(read ReadRTCP) ReadRTCP {
-	return func() ([]rtcp.Packet, map[interface{}]interface{}, error) {
-		pkts, attributes, err := read()
+func (t *testInterceptor) BindRTCPReader(reader interceptor.RTCPReader) interceptor.RTCPReader {
+	return interceptor.RTCPReaderFunc(func() ([]rtcp.Packet, interceptor.Attributes, error) {
+		pkts, attributes, err := reader.Read()
 		if err != nil {
 			return nil, nil, err
 		}
@@ -65,7 +66,7 @@ func (t *testInterceptor) BindReadRTCP(read ReadRTCP) ReadRTCP {
 		t.lastRTCP.Store(pkts[0])
 
 		return pkts, attributes, nil
-	}
+	})
 }
 
 func (t *testInterceptor) lastReadRTCP() rtcp.Packet {
@@ -73,9 +74,9 @@ func (t *testInterceptor) lastReadRTCP() rtcp.Packet {
 	return p
 }
 
-func (t *testInterceptor) BindWriteRTCP(write WriteRTCP) WriteRTCP {
-	t.writeRTCP.Store(write)
-	return write
+func (t *testInterceptor) BindRTCPWriter(writer interceptor.RTCPWriter) interceptor.RTCPWriter {
+	t.rtcpWriter.Store(writer)
+	return writer
 }
 
 func TestPeerConnection_Interceptor(t *testing.T) {
@@ -85,7 +86,7 @@ func TestPeerConnection_Interceptor(t *testing.T) {
 	report := test.CheckRoutines(t)
 	defer report()
 
-	createPC := func(interceptor Interceptor) *PeerConnection {
+	createPC := func(interceptor interceptor.Interceptor) *PeerConnection {
 		m := &MediaEngine{}
 		err := m.RegisterDefaultCodecs()
 		if err != nil {

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v3/pkg/interceptor"
 )
 
 // TrackRemote represents a single inbound source of media
@@ -25,14 +26,7 @@ type TrackRemote struct {
 	receiver *RTPReceiver
 	peeked   []byte
 
-	interceptorReadRTP func() (*rtp.Packet, map[interface{}]interface{}, error)
-}
-
-// TrackRemoteContext is the Context used in Interceptors.
-type TrackRemoteContext struct {
-	id     string
-	params RTPParameters
-	ssrc   SSRC
+	interceptorRTPReader interceptor.RTPReader
 }
 
 // NewTrackRemote creates a new TrackRemote.
@@ -43,7 +37,11 @@ func NewTrackRemote(kind RTPCodecType, ssrc SSRC, rid string, receiver *RTPRecei
 		rid:      rid,
 		receiver: receiver,
 	}
-	t.interceptorReadRTP = t.receiver.api.interceptor.BindRemoteTrack(t.context(), t.readRTP)
+	t.interceptorRTPReader = t.receiver.api.interceptor.BindRemoteTrack(&interceptor.TrackInfo{
+		ID:     t.id,
+		Params: convertRTPParameters(t.params),
+		SSRC:   convertSSRC(t.ssrc),
+	}, interceptor.RTPReaderFunc(t.readRTP))
 
 	return t
 }
@@ -151,11 +149,11 @@ func (t *TrackRemote) peek(b []byte) (n int, err error) {
 // ReadRTP is a convenience method that wraps Read and unmarshals for you.
 // It also runs any configured interceptors.
 func (t *TrackRemote) ReadRTP() (*rtp.Packet, error) {
-	p, _, err := t.interceptorReadRTP()
+	p, _, err := t.interceptorRTPReader.Read()
 	return p, err
 }
 
-func (t *TrackRemote) readRTP() (*rtp.Packet, map[interface{}]interface{}, error) {
+func (t *TrackRemote) readRTP() (*rtp.Packet, interceptor.Attributes, error) {
 	b := make([]byte, receiveMTU)
 	i, err := t.Read(b)
 	if err != nil {
@@ -166,15 +164,7 @@ func (t *TrackRemote) readRTP() (*rtp.Packet, map[interface{}]interface{}, error
 	if err := r.Unmarshal(b[:i]); err != nil {
 		return nil, nil, err
 	}
-	return r, make(map[interface{}]interface{}), nil
-}
-
-func (t *TrackRemote) context() *TrackRemoteContext {
-	return &TrackRemoteContext{
-		id:     t.id,
-		params: t.params,
-		ssrc:   t.ssrc,
-	}
+	return r, make(interceptor.Attributes), nil
 }
 
 // determinePayloadType blocks and reads a single packet to determine the PayloadType for this Track
@@ -195,27 +185,4 @@ func (t *TrackRemote) determinePayloadType() error {
 	defer t.mu.Unlock()
 
 	return nil
-}
-
-// CodecParameters returns the negotiated RTPCodecParameters. These are the codecs supported by both
-// PeerConnections and the SSRC/PayloadTypes
-func (t *TrackRemoteContext) CodecParameters() []RTPCodecParameters {
-	return t.params.Codecs
-}
-
-// HeaderExtensions returns the negotiated RTPHeaderExtensionParameters. These are the header extensions supported by
-// both PeerConnections and the SSRC/PayloadTypes
-func (t *TrackRemoteContext) HeaderExtensions() []RTPHeaderExtensionParameter {
-	return t.params.HeaderExtensions
-}
-
-// SSRC requires the negotiated SSRC of this track
-// This track may have multiple if RTX is enabled
-func (t *TrackRemoteContext) SSRC() SSRC {
-	return t.ssrc
-}
-
-// ID is a unique identifier that is used for both Bind/Unbind
-func (t *TrackRemoteContext) ID() string {
-	return t.id
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3/internal/util"
+	"github.com/pion/webrtc/v3/pkg/interceptor"
 	"github.com/pion/webrtc/v3/pkg/rtcerr"
 )
 
@@ -77,7 +78,7 @@ type PeerConnection struct {
 	api *API
 	log logging.LeveledLogger
 
-	interceptorWriteRTCP func(pkts []rtcp.Packet, attributes map[interface{}]interface{}) (int, error)
+	interceptorRTCPWriter interceptor.RTCPWriter
 }
 
 // NewPeerConnection creates a peerconnection with the default
@@ -121,7 +122,7 @@ func (api *API) NewPeerConnection(configuration Configuration) (*PeerConnection,
 		log: api.settingEngine.LoggerFactory.NewLogger("pc"),
 	}
 
-	pc.interceptorWriteRTCP = api.interceptor.BindWriteRTCP(pc.writeRTCP)
+	pc.interceptorRTCPWriter = api.interceptor.BindRTCPWriter(interceptor.RTCPWriterFunc(pc.writeRTCP))
 
 	var err error
 	if err = pc.initConfiguration(configuration); err != nil {
@@ -1732,11 +1733,11 @@ func (pc *PeerConnection) SetIdentityProvider(provider string) error {
 // WriteRTCP sends a user provided RTCP packet to the connected peer. If no peer is connected the
 // packet is discarded. It also runs any configured interceptors.
 func (pc *PeerConnection) WriteRTCP(pkts []rtcp.Packet) error {
-	_, err := pc.interceptorWriteRTCP(pkts, make(map[interface{}]interface{}))
+	_, err := pc.interceptorRTCPWriter.Write(pkts, make(interceptor.Attributes))
 	return err
 }
 
-func (pc *PeerConnection) writeRTCP(pkts []rtcp.Packet, _ map[interface{}]interface{}) (int, error) {
+func (pc *PeerConnection) writeRTCP(pkts []rtcp.Packet, _ interceptor.Attributes) (int, error) {
 	raw, err := rtcp.Marshal(pkts)
 	if err != nil {
 		return 0, err

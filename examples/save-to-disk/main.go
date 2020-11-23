@@ -10,7 +10,6 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/examples/internal/signal"
-	"github.com/pion/webrtc/v3/pkg/interceptor"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/pion/webrtc/v3/pkg/media/ivfwriter"
 	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
@@ -56,7 +55,7 @@ func main() {
 	}
 
 	ir := &webrtc.InterceptorRegistry{}
-	if err := interceptor.RegisterDefaults(&m, ir); err != nil {
+	if err := webrtc.RegisterDefaultInterceptors(&m, ir); err != nil {
 		panic(err)
 	}
 

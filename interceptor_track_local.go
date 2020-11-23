@@ -6,23 +6,24 @@ import (
 	"sync/atomic"
 
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v3/pkg/interceptor"
 )
 
 type interceptorTrackLocalWriter struct {
 	TrackLocalWriter
-	writeRTP atomic.Value
+	rtpWriter atomic.Value
 }
 
-func (i *interceptorTrackLocalWriter) setWriteRTP(writeRTP WriteRTP) {
-	i.writeRTP.Store(writeRTP)
+func (i *interceptorTrackLocalWriter) setRTPWriter(writer interceptor.RTPWriter) {
+	i.rtpWriter.Store(writer)
 }
 
 func (i *interceptorTrackLocalWriter) WriteRTP(header *rtp.Header, payload []byte) (int, error) {
-	writeRTP := i.writeRTP.Load().(WriteRTP)
+	writer := i.rtpWriter.Load().(interceptor.RTPWriter)
 
-	if writeRTP == nil {
+	if writer == nil {
 		return 0, nil
 	}
 
-	return writeRTP(&rtp.Packet{Header: *header, Payload: payload}, make(map[interface{}]interface{}))
+	return writer.Write(&rtp.Packet{Header: *header, Payload: payload}, make(interceptor.Attributes))
 }

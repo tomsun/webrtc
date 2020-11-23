@@ -9,6 +9,7 @@ import (
 
 	"github.com/pion/rtcp"
 	"github.com/pion/srtp"
+	"github.com/pion/webrtc/v3/pkg/interceptor"
 )
 
 // trackStreams maintains a mapping of RTP/RTCP streams to a specific track
@@ -32,7 +33,7 @@ type RTPReceiver struct {
 	// A reference to the associated api object
 	api *API
 
-	interceptorReadRTCP func() ([]rtcp.Packet, map[interface{}]interface{}, error)
+	interceptorRTCPReader interceptor.RTCPReader
 }
 
 // NewRTPReceiver constructs a new RTPReceiver
@@ -49,7 +50,7 @@ func (api *API) NewRTPReceiver(kind RTPCodecType, transport *DTLSTransport) (*RT
 		received:  make(chan interface{}),
 		tracks:    []trackStreams{},
 	}
-	r.interceptorReadRTCP = api.interceptor.BindReadRTCP(r.readRTCP)
+	r.interceptorRTCPReader = api.interceptor.BindRTCPReader(interceptor.RTCPReaderFunc(r.readRTCP))
 
 	return r, nil
 }
@@ -158,12 +159,12 @@ func (r *RTPReceiver) ReadSimulcast(b []byte, rid string) (n int, err error) {
 // ReadRTCP is a convenience method that wraps Read and unmarshal for you.
 // It also runs any configured interceptors.
 func (r *RTPReceiver) ReadRTCP() ([]rtcp.Packet, error) {
-	pkts, _, err := r.interceptorReadRTCP()
+	pkts, _, err := r.interceptorRTCPReader.Read()
 	return pkts, err
 }
 
 // ReadRTCP is a convenience method that wraps Read and unmarshal for you
-func (r *RTPReceiver) readRTCP() ([]rtcp.Packet, map[interface{}]interface{}, error) {
+func (r *RTPReceiver) readRTCP() ([]rtcp.Packet, interceptor.Attributes, error) {
 	b := make([]byte, receiveMTU)
 	i, err := r.Read(b)
 	if err != nil {
@@ -175,7 +176,7 @@ func (r *RTPReceiver) readRTCP() ([]rtcp.Packet, map[interface{}]interface{}, er
 		return nil, nil, err
 	}
 
-	return pkts, make(map[interface{}]interface{}), nil
+	return pkts, make(interceptor.Attributes), nil
 }
 
 // ReadSimulcastRTCP is a convenience method that wraps ReadSimulcast and unmarshal for you

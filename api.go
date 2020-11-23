@@ -4,6 +4,7 @@ package webrtc
 
 import (
 	"github.com/pion/logging"
+	"github.com/pion/webrtc/v3/pkg/interceptor"
 )
 
 // API bundles the global functions of the WebRTC and ORTC API.
@@ -13,7 +14,7 @@ import (
 type API struct {
 	settingEngine *SettingEngine
 	mediaEngine   *MediaEngine
-	interceptor   Interceptor
+	interceptor   interceptor.Interceptor
 }
 
 // NewAPI Creates a new API object for keeping semi-global settings to WebRTC objects
@@ -37,7 +38,7 @@ func NewAPI(options ...func(*API)) *API {
 	}
 
 	if a.interceptor == nil {
-		a.interceptor = &NoOpInterceptor{}
+		a.interceptor = &interceptor.NoOp{}
 	}
 
 	return a

@@ -10,6 +10,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/srtp"
+	"github.com/pion/webrtc/v3/pkg/interceptor"
 )
 
 // RTPSender allows an application to control how a given Track is encoded and transmitted to a remote peer
@@ -37,7 +38,7 @@ type RTPSender struct {
 	mu                     sync.RWMutex
 	sendCalled, stopCalled chan interface{}
 
-	interceptorReadRTCP func() ([]rtcp.Packet, map[interface{}]interface{}, error)
+	interceptorRTCPReader interceptor.RTCPReader
 }
 
 // NewRTPSender constructs a new RTPSender
@@ -62,7 +63,7 @@ func (api *API) NewRTPSender(track TrackLocal, transport *DTLSTransport) (*RTPSe
 		ssrc:       SSRC(randutil.NewMathRandomGenerator().Uint32()),
 		id:         id,
 	}
-	r.interceptorReadRTCP = api.interceptor.BindReadRTCP(r.readRTCP)
+	r.interceptorRTCPReader = api.interceptor.BindRTCPReader(interceptor.RTCPReaderFunc(r.readRTCP))
 
 	return r, nil
 }
@@ -164,9 +165,18 @@ func (r *RTPSender) Send(parameters RTPSendParameters) error {
 	}
 	r.context.params.Codecs = []RTPCodecParameters{codec}
 
-	writeStream.setWriteRTP(r.api.interceptor.BindLocalTrack(&r.context, func(p *rtp.Packet, attributes map[interface{}]interface{}) (int, error) {
-		return rtpWriteStream.WriteRTP(&p.Header, p.Payload)
-	}))
+	info := &interceptor.TrackInfo{
+		ID:     r.context.id,
+		Params: convertRTPParameters(r.context.params),
+		SSRC:   convertSSRC(r.context.ssrc),
+	}
+	writeStream.setRTPWriter(
+		r.api.interceptor.BindLocalTrack(
+			info,
+			interceptor.RTPWriterFunc(func(p *rtp.Packet, attributes interceptor.Attributes) (int, error) {
+				return rtpWriteStream.WriteRTP(&p.Header, p.Payload)
+			}),
+		))
 
 	close(r.sendCalled)
 	return nil
@@ -204,11 +214,11 @@ func (r *RTPSender) Read(b []byte) (n int, err error) {
 // ReadRTCP is a convenience method that wraps Read and unmarshals for you.
 // It also runs any configured interceptors.
 func (r *RTPSender) ReadRTCP() ([]rtcp.Packet, error) {
-	pkts, _, err := r.interceptorReadRTCP()
+	pkts, _, err := r.interceptorRTCPReader.Read()
 	return pkts, err
 }
 
-func (r *RTPSender) readRTCP() ([]rtcp.Packet, map[interface{}]interface{}, error) {
+func (r *RTPSender) readRTCP() ([]rtcp.Packet, interceptor.Attributes, error) {
 	b := make([]byte, receiveMTU)
 	i, err := r.Read(b)
 	if err != nil {
@@ -220,7 +230,7 @@ func (r *RTPSender) readRTCP() ([]rtcp.Packet, map[interface{}]interface{}, erro
 		return nil, nil, err
 	}
 
-	return pkts, make(map[interface{}]interface{}), nil
+	return pkts, make(interceptor.Attributes), nil
 }
 
 // hasSent tells if data has been ever sent for this instance
